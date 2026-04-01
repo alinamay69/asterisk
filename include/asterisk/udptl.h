@@ -69,6 +69,26 @@ void ast_udptl_get_peer(const struct ast_udptl *udptl, struct ast_sockaddr *them
 
 void ast_udptl_get_us(const struct ast_udptl *udptl, struct ast_sockaddr *us);
 
+/*!
+ * \brief Set the source address to send UDPTL packets from
+ *
+ * \param udptl The UDPTL session
+ * \param source The local address to send from, or NULL to let the
+ *        kernel choose (the default)
+ *
+ * When the session is bound to a wildcard address, outgoing packets
+ * normally leave from whatever address the routing table selects. This
+ * pins their source to the given local address (normally the address
+ * advertised in SDP), keeping the bound port. It does not change the
+ * address the session receives on.
+ *
+ * \since 20.23.0
+ * \since 22.13.0
+ * \since 23.7.0
+ * \since 24.1.0
+ */
+void ast_udptl_set_source_address(struct ast_udptl *udptl, const struct ast_sockaddr *source);
+
 void ast_udptl_destroy(struct ast_udptl *udptl);
 
 void ast_udptl_reset(struct ast_udptl *udptl);

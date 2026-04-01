@@ -3462,6 +3462,7 @@ static int __rtp_sendto(struct ast_rtp_instance *instance, void *buf, size_t siz
 	struct ast_rtp_instance *transport = rtp->bundled ? rtp->bundled : instance;
 	struct ast_rtp *transport_rtp = ast_rtp_instance_get_data(transport);
 	struct ast_srtp *srtp = ast_rtp_instance_get_srtp(transport, rtcp);
+	struct ast_sockaddr source;
 	int res;
 #if defined(HAVE_OPENSSL) && (OPENSSL_VERSION_NUMBER >= 0x10001000L) && !defined(OPENSSL_NO_SRTP)
 	char *out = buf;
@@ -3511,7 +3512,9 @@ static int __rtp_sendto(struct ast_rtp_instance *instance, void *buf, size_t siz
 	}
 #endif
 
-	res = ast_sendto(rtcp ? transport_rtp->rtcp->s : transport_rtp->s, temp, len, flags, sa);
+	/* Instances sharing a bundle transport are given the same source address */
+	ast_rtp_instance_get_source_address(instance, &source);
+	res = ast_sendto_from(rtcp ? transport_rtp->rtcp->s : transport_rtp->s, temp, len, flags, sa, &source);
 	if (res > 0) {
 		ast_rtp_instance_set_last_tx(instance, time(NULL));
 	}

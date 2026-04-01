@@ -204,6 +204,8 @@ struct ast_rtp_instance {
 	struct ast_sockaddr requested_target_address;
 	/*! Address that we are sending RTP to */
 	struct ast_sockaddr incoming_source_address;
+	/*! Local address to send RTP and RTCP from (null to let the kernel choose) */
+	struct ast_sockaddr source_address;
 	/*! Instance that we are bridged to if doing remote or local bridging */
 	struct ast_rtp_instance *bridged;
 	/*! Payload and packetization information */
@@ -673,6 +675,26 @@ void ast_rtp_instance_get_local_address(struct ast_rtp_instance *instance,
 {
 	ao2_lock(instance);
 	ast_sockaddr_copy(address, &instance->local_address);
+	ao2_unlock(instance);
+}
+
+void ast_rtp_instance_set_source_address(struct ast_rtp_instance *instance,
+	const struct ast_sockaddr *address)
+{
+	ao2_lock(instance);
+	if (address) {
+		ast_sockaddr_copy(&instance->source_address, address);
+	} else {
+		ast_sockaddr_setnull(&instance->source_address);
+	}
+	ao2_unlock(instance);
+}
+
+void ast_rtp_instance_get_source_address(struct ast_rtp_instance *instance,
+	struct ast_sockaddr *address)
+{
+	ao2_lock(instance);
+	ast_sockaddr_copy(address, &instance->source_address);
 	ao2_unlock(instance);
 }
 

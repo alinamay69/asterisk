@@ -188,6 +188,8 @@ struct ast_udptl {
 	int flags;
 	struct ast_sockaddr us;
 	struct ast_sockaddr them;
+	/*! Local address to send from (null to let the kernel choose) */
+	struct ast_sockaddr source;
 	int *ioid;
 	struct ast_sched_context *sched;
 	struct io_context *io;
@@ -1167,6 +1169,15 @@ void ast_udptl_get_us(const struct ast_udptl *udptl, struct ast_sockaddr *us)
 	ast_sockaddr_copy(us, &udptl->us);
 }
 
+void ast_udptl_set_source_address(struct ast_udptl *udptl, const struct ast_sockaddr *source)
+{
+	if (source) {
+		ast_sockaddr_copy(&udptl->source, source);
+	} else {
+		ast_sockaddr_setnull(&udptl->source);
+	}
+}
+
 void ast_udptl_stop(struct ast_udptl *udptl)
 {
 	ast_sockaddr_setnull(&udptl->them);
@@ -1224,7 +1235,7 @@ int ast_udptl_write(struct ast_udptl *s, struct ast_frame *f)
 	len = udptl_build_packet(s, buf, sizeof(buf), f->data.ptr, len);
 
 	if ((signed int) len > 0 && !ast_sockaddr_isnull(&s->them)) {
-		if (ast_sendto(s->fd, buf, len, 0, &s->them) < 0) {
+		if (ast_sendto_from(s->fd, buf, len, 0, &s->them, &s->source) < 0) {
 			ast_log(LOG_NOTICE, "UDPTL (%s): Transmission error to %s: %s\n",
 				LOG_TAG(s), ast_sockaddr_stringify(&s->them), strerror(errno));
 		}

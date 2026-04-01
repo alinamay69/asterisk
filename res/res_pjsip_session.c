@@ -52,6 +52,8 @@
 #include "asterisk/test.h"
 #include "asterisk/stream.h"
 #include "asterisk/vector.h"
+#include "asterisk/rtp_engine.h"
+#include "asterisk/udptl.h"
 
 #include "res_pjsip_session/pjsip_session.h"
 
@@ -5559,6 +5561,88 @@ static void session_outgoing_nat_hook(pjsip_tx_data *tdata, struct ast_sip_trans
 
 }
 
+/*! \brief Set the address the media of a media state is sent from */
+static void set_media_state_source_address(struct ast_sip_session_media_state *media_state,
+	const struct ast_sockaddr *source)
+{
+	int i;
+
+	if (!media_state) {
+		return;
+	}
+
+	for (i = 0; i < AST_VECTOR_SIZE(&media_state->sessions); i++) {
+		struct ast_sip_session_media *session_media = AST_VECTOR_GET(&media_state->sessions, i);
+
+		if (!session_media) {
+			continue;
+		}
+		if (session_media->rtp) {
+			ast_rtp_instance_set_source_address(session_media->rtp, source);
+		}
+		if (session_media->udptl) {
+			ast_udptl_set_source_address(session_media->udptl, source);
+		}
+	}
+}
+
+/*!
+ * \brief Send the session's media from the address its outgoing SDP advertises
+ *
+ * The media sockets are bound to a wildcard address unless configured
+ * otherwise, so the kernel picks the source address of outgoing media from the
+ * routing table. That can differ from the address the SDP advertises, which
+ * breaks media through NAT and on multihomed hosts. This runs after the
+ * transport has been selected and the SDP connection address set, every time
+ * a message with SDP is sent, so it follows transport changes such as DNS
+ * failover.
+ */
+static pj_status_t session_media_source_on_tx_message(pjsip_tx_data *tdata)
+{
+	pjsip_dialog *dlg;
+	struct ast_sip_session *session;
+	pjsip_sdp_info *sdp_info;
+	struct ast_sockaddr source;
+
+	if (!tdata->msg->body || !(dlg = pjsip_tdata_get_dlg(tdata))) {
+		return PJ_SUCCESS;
+	}
+
+	sdp_info = pjsip_get_sdp_info(tdata->pool, tdata->msg->body, NULL, &pjsip_media_type_application_sdp);
+	if (sdp_info->sdp_err != PJ_SUCCESS || !sdp_info->sdp) {
+		return PJ_SUCCESS;
+	}
+
+	session = ast_sip_dialog_get_session(dlg);
+	if (!session) {
+		return PJ_SUCCESS;
+	}
+
+	if (ast_sip_get_media_source_address(tdata, &source)) {
+		ast_debug(4, "%s: Media will be sent from the address the kernel selects\n",
+			ast_sip_session_get_name(session));
+		set_media_state_source_address(session->pending_media_state, NULL);
+		set_media_state_source_address(session->active_media_state, NULL);
+	} else {
+		ast_debug(4, "%s: Media will be sent from %s\n", ast_sip_session_get_name(session),
+			ast_sockaddr_stringify_addr(&source));
+		set_media_state_source_address(session->pending_media_state, &source);
+		set_media_state_source_address(session->active_media_state, &source);
+	}
+
+	ao2_ref(session, -1);
+	return PJ_SUCCESS;
+}
+
+/*! \brief Runs after the message filter (PJSIP_MOD_PRIORITY_TSX_LAYER - 1) has chosen the transport */
+static pjsip_module session_media_source_module = {
+	.name = { "Session Media Source", 20 },
+	.id = -1,
+	.priority = PJSIP_MOD_PRIORITY_TSX_LAYER - 3,
+	.on_tx_request = session_media_source_on_tx_message,
+	.on_tx_response = session_media_source_on_tx_message,
+};
+
 #ifdef TEST_FRAMEWORK
 
 static struct ast_stream *test_stream_alloc(const char *name, enum ast_media_type type, enum ast_stream_state state)
@@ -6138,6 +6222,7 @@ static int load_module(void)
 	}
 	ast_sip_register_service(&session_reinvite_module);
 	ast_sip_register_service(&outbound_invite_auth_module);
+	ast_sip_register_service(&session_media_source_module);
 
 	pjsip_reason_header_load();
 
@@ -6155,6 +6240,7 @@ static int unload_module(void)
 #ifdef TEST_FRAMEWORK
 	AST_TEST_UNREGISTER(test_resolve_refresh_media_states);
 #endif
+	ast_sip_unregister_service(&session_media_source_module);
 	ast_sip_unregister_service(&outbound_invite_auth_module);
 	ast_sip_unregister_service(&session_reinvite_module);
 	ast_sip_unregister_service(&session_module);

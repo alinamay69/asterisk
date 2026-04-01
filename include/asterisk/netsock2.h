@@ -725,6 +725,42 @@ ssize_t ast_sendto(int sockfd, const void *buf, size_t len, int flags,
 		   const struct ast_sockaddr *dest_addr);
 
 /*!
+ * \since 20.23.0
+ * \since 22.13.0
+ * \since 23.7.0
+ * \since 24.1.0
+ *
+ * \brief
+ * Send a datagram from a specific local source address.
+ *
+ * \details
+ * Like ast_sendto(), but asks the kernel to use \a src_addr as the source
+ * address of the datagram (IP_PKTINFO, IP_SENDSRCADDR or IPV6_PKTINFO,
+ * depending on the platform and the address family of \a dest_addr). This
+ * lets a socket bound to a wildcard address send from the address that was
+ * advertised to the peer, instead of the address the routing table picks.
+ *
+ * The source address is ignored, and the datagram sent as with ast_sendto(),
+ * when \a src_addr is NULL, null or a wildcard address, when its address
+ * family does not match \a dest_addr, or when the platform does not support
+ * setting the source address. If the kernel rejects the source address the
+ * datagram is sent again without it.
+ *
+ * Only the address of \a src_addr is used; its port is ignored.
+ *
+ * \param sockfd The socket to send on
+ * \param buf The data to send
+ * \param len The length of the data
+ * \param flags Flags as for sendto(2)
+ * \param dest_addr The destination address
+ * \param src_addr The source address to send from, or NULL
+ *
+ * \return As for sendto(2)
+ */
+ssize_t ast_sendto_from(int sockfd, const void *buf, size_t len, int flags,
+		   const struct ast_sockaddr *dest_addr, const struct ast_sockaddr *src_addr);
+
+/*!
  * \since 1.8
  *
  * \brief
