@@ -36,6 +36,10 @@
 #include "asterisk/netsock2.h"
 #include "asterisk/logger.h"
 #include "asterisk/config.h" /* PARSE_PORT_* */
+#include "asterisk/poll-compat.h"
+
+#include <unistd.h>
+
 struct parse_test {
 	const char *address;
 	int expected_result;
@@ -181,10 +185,172 @@ AST_TEST_DEFINE(split_hostport)
 	return res;
 }
 
+/*!
+ * \internal
+ * \brief Open a UDP socket bound to \a address with an ephemeral port
+ *
+ * A wildcard IPv6 address gives a dual-stack socket, as the RTP stack uses.
+ *
+ * \return The socket, or -1 if the address cannot be bound on this host
+ */
+static int sendto_from_socket(const char *address, struct ast_sockaddr *bound)
+{
+	struct ast_sockaddr addr;
+	int fd;
+
+	if (!ast_sockaddr_parse(&addr, address, PARSE_PORT_FORBID)) {
+		return -1;
+	}
+	fd = socket(ast_sockaddr_is_ipv6(&addr) ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) {
+		return -1;
+	}
+#ifdef HAVE_SOCK_IPV6_V6ONLY
+	if (ast_sockaddr_is_ipv6(&addr) && ast_sockaddr_is_any(&addr)) {
+		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &(int){0}, sizeof(int));
+	}
+#endif
+	if (ast_bind(fd, &addr) || ast_getsockname(fd, bound)) {
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+AST_TEST_DEFINE(sendto_from)
+{
+	static const struct {
+		/*! Address the sending socket is bound to */
+		const char *bind;
+		/*! Destination address (the port is the receiver's) */
+		const char *dest;
+		/*! Source address to send from, or NULL */
+		const char *source;
+		/*! Source address the receiver must see */
+		const char *expected;
+	} tests[] = {
+		/* No source requested: the kernel picks 127.0.0.1 for 127.0.0.1 */
+		{ "0.0.0.0", "127.0.0.1", NULL, "127.0.0.1" },
+		{ "0.0.0.0", "127.0.0.1", "127.0.0.2", "127.0.0.2" },
+		/* Wildcard, non-local and wrong-family sources are not applied */
+		{ "0.0.0.0", "127.0.0.1", "0.0.0.0", "127.0.0.1" },
+		{ "0.0.0.0", "127.0.0.1", "192.0.2.1", "127.0.0.1" },
+		{ "0.0.0.0", "127.0.0.1", "::1", "127.0.0.1" },
+		/* Dual-stack socket to IPv4 peers, plain and v4-mapped */
+		{ "::", "127.0.0.1", NULL, "127.0.0.1" },
+		{ "::", "127.0.0.1", "127.0.0.2", "127.0.0.2" },
+		{ "::", "::ffff:127.0.0.1", "127.0.0.2", "127.0.0.2" },
+		{ "::", "127.0.0.1", "::ffff:127.0.0.2", "127.0.0.2" },
+		{ "::", "127.0.0.1", "192.0.2.1", "127.0.0.1" },
+		/* Dual-stack socket to an IPv6 peer */
+		{ "::", "::1", "::1", "::1" },
+		{ "::", "::1", "127.0.0.2", "::1" },
+		{ "::", "::1", "2001:db8::1", "::1" },
+	};
+	struct ast_sockaddr recv4_addr, recv6_addr, probe_addr;
+	int recv4 = -1, recv6 = -1, have_lo2;
+	enum ast_test_result_state res = AST_TEST_PASS;
+	int i;
+
+	switch (cmd) {
+	case TEST_INIT:
+		info->name = "sendto_from";
+		info->category = "/main/netsock2/";
+		info->summary = "Test sending a datagram from a specific source address";
+		info->description =
+			"Sends from wildcard-bound sockets with and without a requested\n"
+			"source address and checks the source the receiver sees.";
+		return AST_TEST_NOT_RUN;
+	case TEST_EXECUTE:
+		break;
+	}
+
+	/* 127.0.0.2 is a second local address on Linux; skip its cases elsewhere */
+	i = sendto_from_socket("127.0.0.2", &probe_addr);
+	have_lo2 = i >= 0;
+	if (have_lo2) {
+		close(i);
+	}
+
+	recv4 = sendto_from_socket("127.0.0.1", &recv4_addr);
+	if (recv4 < 0) {
+		ast_test_status_update(test, "Unable to bind receiver to 127.0.0.1\n");
+		return AST_TEST_FAIL;
+	}
+	recv6 = sendto_from_socket("::1", &recv6_addr);
+
+	for (i = 0; i < ARRAY_LEN(tests); i++) {
+		struct ast_sockaddr bound, dest, source, expected, from;
+		struct pollfd pfd = { .events = POLLIN };
+		char buf[16];
+		int sender;
+		ssize_t sent;
+
+		ast_sockaddr_parse(&dest, tests[i].dest, PARSE_PORT_FORBID);
+		ast_sockaddr_parse(&expected, tests[i].expected, PARSE_PORT_FORBID);
+		if (tests[i].source) {
+			ast_sockaddr_parse(&source, tests[i].source, PARSE_PORT_FORBID);
+		}
+
+		if ((ast_sockaddr_is_ipv6(&dest) && !ast_sockaddr_is_ipv4_mapped(&dest) && recv6 < 0)
+			|| (!have_lo2 && tests[i].source && strstr(tests[i].source, "127.0.0.2"))) {
+			ast_test_status_update(test, "Skipping %s -> %s from %s: address not available\n",
+				tests[i].bind, tests[i].dest, S_OR(tests[i].source, "(none)"));
+			continue;
+		}
+
+		if (strchr(tests[i].bind, ':') && !ast_check_ipv6()) {
+			ast_test_status_update(test, "Skipping %s -> %s from %s: IPv6 is not available\n",
+				tests[i].bind, tests[i].dest, S_OR(tests[i].source, "(none)"));
+			continue;
+		}
+		sender = sendto_from_socket(tests[i].bind, &bound);
+		if (sender < 0) {
+			ast_test_status_update(test, "%s -> %s from %s: cannot bind %s\n",
+				tests[i].bind, tests[i].dest, S_OR(tests[i].source, "(none)"), tests[i].bind);
+			res = AST_TEST_FAIL;
+			continue;
+		}
+
+		pfd.fd = recv4;
+		ast_sockaddr_set_port(&dest, ast_sockaddr_port(&recv4_addr));
+		if (ast_sockaddr_is_ipv6(&dest) && !ast_sockaddr_is_ipv4_mapped(&dest)) {
+			pfd.fd = recv6;
+			ast_sockaddr_set_port(&dest, ast_sockaddr_port(&recv6_addr));
+		}
+
+		sent = ast_sendto_from(sender, "test", 4, 0, &dest, tests[i].source ? &source : NULL);
+		if (sent != 4) {
+			ast_test_status_update(test, "%s -> %s from %s: send failed: %s\n",
+				tests[i].bind, tests[i].dest, S_OR(tests[i].source, "(none)"), strerror(errno));
+			res = AST_TEST_FAIL;
+		} else if (ast_poll(&pfd, 1, 1000) != 1
+			|| ast_recvfrom(pfd.fd, buf, sizeof(buf), 0, &from) != 4) {
+			ast_test_status_update(test, "%s -> %s from %s: nothing received\n",
+				tests[i].bind, tests[i].dest, S_OR(tests[i].source, "(none)"));
+			res = AST_TEST_FAIL;
+		} else if (ast_sockaddr_cmp_addr(&from, &expected)
+			|| ast_sockaddr_port(&from) != ast_sockaddr_port(&bound)) {
+			ast_test_status_update(test, "%s -> %s from %s: received from %s, expected %s port %d\n",
+				tests[i].bind, tests[i].dest, S_OR(tests[i].source, "(none)"),
+				ast_sockaddr_stringify(&from), tests[i].expected, ast_sockaddr_port(&bound));
+			res = AST_TEST_FAIL;
+		}
+		close(sender);
+	}
+
+	close(recv4);
+	if (recv6 >= 0) {
+		close(recv6);
+	}
+	return res;
+}
+
 static int unload_module(void)
 {
 	AST_TEST_UNREGISTER(parsing);
 	AST_TEST_UNREGISTER(split_hostport);
+	AST_TEST_UNREGISTER(sendto_from);
 	return 0;
 }
 
@@ -192,6 +358,7 @@ static int load_module(void)
 {
 	AST_TEST_REGISTER(parsing);
 	AST_TEST_REGISTER(split_hostport);
+	AST_TEST_REGISTER(sendto_from);
 	return AST_MODULE_LOAD_SUCCESS;
 }
 

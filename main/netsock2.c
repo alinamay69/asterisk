@@ -618,6 +618,100 @@ ssize_t ast_sendto(int sockfd, const void *buf, size_t len, int flags,
 		      (const struct sockaddr *)&dest_addr->ss, dest_addr->len);
 }
 
+ssize_t ast_sendto_from(int sockfd, const void *buf, size_t len, int flags,
+		   const struct ast_sockaddr *dest_addr, const struct ast_sockaddr *src_addr)
+{
+#if defined(IP_PKTINFO) || defined(IP_SENDSRCADDR) || defined(IPV6_PKTINFO)
+	/* Room for any of the options below (in_pktinfo, in_addr, in6_pktinfo) */
+	union {
+		char buf[CMSG_SPACE(32)];
+		struct cmsghdr align;
+	} control;
+	struct iovec iov = { .iov_base = (void *) buf, .iov_len = len };
+	struct msghdr msg = {
+		.msg_name = (void *) &dest_addr->ss,
+		.msg_namelen = dest_addr->len,
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+		.msg_control = control.buf,
+	};
+	struct cmsghdr *cmsg;
+	ssize_t res;
+
+	if (!src_addr || ast_sockaddr_isnull(src_addr) || ast_sockaddr_is_any(src_addr)) {
+		return ast_sendto(sockfd, buf, len, flags, dest_addr);
+	}
+
+	memset(&control, 0, sizeof(control));
+
+	/*
+	 * The source must be of the destination's family. A dual-stack socket
+	 * sends to IPv4 peers (plain or v4-mapped) through the IPv4 stack, which
+	 * takes the IPv4 option.
+	 */
+	if (ast_sockaddr_is_ipv4(dest_addr) || ast_sockaddr_is_ipv4_mapped(dest_addr)) {
+#if defined(IP_PKTINFO) || defined(IP_SENDSRCADDR)
+		struct ast_sockaddr src4;
+		struct in_addr addr;
+
+		if (ast_sockaddr_is_ipv4(src_addr)) {
+			ast_sockaddr_copy(&src4, src_addr);
+		} else if (!ast_sockaddr_ipv4_mapped(src_addr, &src4)) {
+			return ast_sendto(sockfd, buf, len, flags, dest_addr);
+		}
+		addr = ((struct sockaddr_in *) &src4.ss)->sin_addr;
+#if defined(IP_PKTINFO)
+		{
+			struct in_pktinfo pktinfo = { .ipi_spec_dst = addr };
+
+			msg.msg_controllen = CMSG_SPACE(sizeof(pktinfo));
+			cmsg = CMSG_FIRSTHDR(&msg);
+			cmsg->cmsg_level = IPPROTO_IP;
+			cmsg->cmsg_type = IP_PKTINFO;
+			cmsg->cmsg_len = CMSG_LEN(sizeof(pktinfo));
+			memcpy(CMSG_DATA(cmsg), &pktinfo, sizeof(pktinfo));
+		}
+#else
+		msg.msg_controllen = CMSG_SPACE(sizeof(addr));
+		cmsg = CMSG_FIRSTHDR(&msg);
+		cmsg->cmsg_level = IPPROTO_IP;
+		cmsg->cmsg_type = IP_SENDSRCADDR;
+		cmsg->cmsg_len = CMSG_LEN(sizeof(addr));
+		memcpy(CMSG_DATA(cmsg), &addr, sizeof(addr));
+#endif
+#else
+		return ast_sendto(sockfd, buf, len, flags, dest_addr);
+#endif
+	} else {
+#if defined(IPV6_PKTINFO)
+		struct in6_pktinfo pktinfo = { 0, };
+
+		if (!ast_sockaddr_is_ipv6(src_addr) || ast_sockaddr_is_ipv4_mapped(src_addr)) {
+			return ast_sendto(sockfd, buf, len, flags, dest_addr);
+		}
+		pktinfo.ipi6_addr = ((struct sockaddr_in6 *) &src_addr->ss)->sin6_addr;
+		msg.msg_controllen = CMSG_SPACE(sizeof(pktinfo));
+		cmsg = CMSG_FIRSTHDR(&msg);
+		cmsg->cmsg_level = IPPROTO_IPV6;
+		cmsg->cmsg_type = IPV6_PKTINFO;
+		cmsg->cmsg_len = CMSG_LEN(sizeof(pktinfo));
+		memcpy(CMSG_DATA(cmsg), &pktinfo, sizeof(pktinfo));
+#else
+		return ast_sendto(sockfd, buf, len, flags, dest_addr);
+#endif
+	}
+
+	res = sendmsg(sockfd, &msg, flags);
+	if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+		/* The source address was rejected (no longer local, for instance) */
+		res = ast_sendto(sockfd, buf, len, flags, dest_addr);
+	}
+	return res;
+#else
+	return ast_sendto(sockfd, buf, len, flags, dest_addr);
+#endif
+}
+
 int ast_set_qos(int sockfd, int tos, int cos, const char *desc)
 {
 	int res = 0;

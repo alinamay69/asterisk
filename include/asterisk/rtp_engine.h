@@ -1235,6 +1235,42 @@ int ast_rtp_instance_set_local_address(struct ast_rtp_instance *instance,
 void ast_rtp_instance_get_local_address(struct ast_rtp_instance *instance, struct ast_sockaddr *address);
 
 /*!
+ * \brief Set the source address to send RTP and RTCP from
+ *
+ * \param instance The RTP instance to change the address on
+ * \param address The local address to send from, or NULL to let the
+ *        kernel choose (the default)
+ *
+ * When the instance is bound to a wildcard address, outgoing packets
+ * normally leave from whatever address the routing table selects. This
+ * pins the source of outgoing RTP and RTCP to the given local address
+ * (normally the address advertised in SDP), keeping the port the instance
+ * is bound to. It does not change the address the instance receives on,
+ * and does not apply to packets sent through ICE.
+ *
+ * \since 20.23.0
+ * \since 22.13.0
+ * \since 23.7.0
+ * \since 24.1.0
+ */
+void ast_rtp_instance_set_source_address(struct ast_rtp_instance *instance,
+	const struct ast_sockaddr *address);
+
+/*!
+ * \brief Get the source address set with ast_rtp_instance_set_source_address()
+ *
+ * \param instance The RTP instance to get the address from
+ * \param address The variable to store the address in; null if none is set
+ *
+ * \since 20.23.0
+ * \since 22.13.0
+ * \since 23.7.0
+ * \since 24.1.0
+ */
+void ast_rtp_instance_get_source_address(struct ast_rtp_instance *instance,
+	struct ast_sockaddr *address);
+
+/*!
  * \brief Get the address of the local endpoint that we are sending RTP to, comparing its address to another
  *
  * \param instance The instance that we want to get the local address for

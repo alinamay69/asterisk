@@ -27,6 +27,7 @@
 #include "asterisk/module.h"
 
 #define MOD_DATA_RESTRICTIONS "restrictions"
+#define MOD_DATA_MEDIA_SOURCE "media_source"
 
 static pj_status_t filter_on_tx_message(pjsip_tx_data *tdata);
 static pj_bool_t filter_on_rx_message(pjsip_rx_data *rdata);
@@ -142,6 +143,17 @@ static int is_bound_any(pjsip_transport *transport)
 	return 0;
 }
 
+/*!
+ * \brief Helper function which determines if a transport is listening on a specific address
+ *
+ * Connection-oriented transports always have a specific local address, so
+ * the address their listener is bound to is checked instead.
+ */
+static int is_bound_specific(pjsip_transport *transport)
+{
+	return pj_sockaddr_has_addr(transport->factory ? &transport->factory->local_addr : &transport->local_addr);
+}
+
 /*! \brief Helper function which determines if the address within SDP should be rewritten */
 static int multihomed_rewrite_sdp(struct pjmedia_sdp_session *sdp)
 {
@@ -233,6 +245,11 @@ static pj_status_t filter_on_tx_message(pjsip_tx_data *tdata)
 	pjsip_tpselector sel;
 	pjsip_sdp_info *sdp_info;
 	pjmedia_sdp_session *sdp;
+
+	/* The media source address is determined anew each time the message is sent */
+	if (ast_sip_mod_data_get(tdata->mod_data, filter_module_tsx.id, MOD_DATA_MEDIA_SOURCE)) {
+		ast_sip_mod_data_set(tdata->pool, tdata->mod_data, filter_module_tsx.id, MOD_DATA_MEDIA_SOURCE, NULL);
+	}
 
 	sanitize_tdata(tdata);
 
@@ -365,9 +382,41 @@ static pj_status_t filter_on_tx_message(pjsip_tx_data *tdata)
 		}
 
 		pjsip_tx_data_invalidate_msg(tdata);
+
+		/*
+		 * Media sockets are bound to a wildcard address, so the kernel would
+		 * choose their source address from the routing table. When the
+		 * transport is bound to a specific address, record it so media is
+		 * sent from the address the SDP now advertises.
+		 */
+		if (is_bound_specific(tdata->tp_info.transport)) {
+			struct ast_sockaddr *source = PJ_POOL_ZALLOC_T(tdata->pool, struct ast_sockaddr);
+			char host[PJ_INET6_ADDRSTRLEN];
+
+			ast_copy_pj_str(host, &prm.ret_addr, sizeof(host));
+			if (ast_sockaddr_parse(source, host, PARSE_PORT_FORBID)) {
+				ast_sip_mod_data_set(tdata->pool, tdata->mod_data, filter_module_tsx.id,
+					MOD_DATA_MEDIA_SOURCE, source);
+			}
+		}
 	}
 
 	return PJ_SUCCESS;
+}
+
+int ast_sip_get_media_source_address(pjsip_tx_data *tdata, struct ast_sockaddr *addr)
+{
+	struct ast_sockaddr *source = NULL;
+
+	if (filter_module_tsx.id >= 0) {
+		source = ast_sip_mod_data_get(tdata->mod_data, filter_module_tsx.id, MOD_DATA_MEDIA_SOURCE);
+	}
+	if (!source) {
+		ast_sockaddr_setnull(addr);
+		return -1;
+	}
+	ast_sockaddr_copy(addr, source);
+	return 0;
 }
 
 enum uri_type {

@@ -3736,6 +3736,34 @@ int ast_sip_get_host_ip(int af, pj_sockaddr *addr);
 const char *ast_sip_get_host_ip_string(int af);
 
 /*!
+ * \brief Get the local address media should be sent from for an outgoing message
+ *
+ * When an outgoing message carrying SDP is sent on a transport bound to a
+ * specific address, the SDP connection address is set to that address. This
+ * retrieves it, so that media can be sent from the address given to the peer
+ * rather than from whatever address the routing table selects for a socket
+ * bound to a wildcard address.
+ *
+ * The address is determined each time the message is sent, after the transport
+ * is selected, so it is only available to PJSIP modules with a priority value
+ * lower than PJSIP_MOD_PRIORITY_TSX_LAYER - 1.
+ *
+ * \param tdata The outgoing message
+ * \param addr Set to the address, or to a null address if there is none
+ *
+ * \retval 0 addr was set to the address
+ * \retval -1 no specific address (the message has no SDP, the SDP connection
+ *         address was not set from the transport, or the transport is bound
+ *         to a wildcard address)
+ *
+ * \since 20.23.0
+ * \since 22.13.0
+ * \since 23.7.0
+ * \since 24.1.0
+ */
+int ast_sip_get_media_source_address(pjsip_tx_data *tdata, struct ast_sockaddr *addr);
+
+/*!
  * \brief Return the size of the SIP taskpool's task queue
  * \since 13.7.0
  */
